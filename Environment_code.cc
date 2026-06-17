@@ -553,7 +553,7 @@ int main(int argc, char* argv[])
 
     NodeContainer ueVoiceContainer = gridScenario.GetUserTerminals();
     MobilityHelper mobilityUe;
-    mobilityUe.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+    mobilityUe.SetMobilityModel("ns3::RandomWalk2dMobilityModel");
     mobilityUe.Install(ueVoiceContainer);
 
     // Store for re-randomization
@@ -747,30 +747,6 @@ int main(int argc, char* argv[])
     g_monitor->SetAttribute("DelayBinWidth",      DoubleValue(0.001));
     g_monitor->SetAttribute("JitterBinWidth",     DoubleValue(0.001));
     g_monitor->SetAttribute("PacketSizeBinWidth", DoubleValue(20));
-
-    // ── NetAnim ───────────────────────────────────────────────────────────────
-    NodeContainer cornerNodes;
-    cornerNodes.Create(4);
-    MobilityHelper cornerMobility;
-    cornerMobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
-    cornerMobility.Install(cornerNodes);
-    cornerNodes.Get(0)->GetObject<MobilityModel>()->SetPosition(Vector(0,   0,   0));
-    cornerNodes.Get(1)->GetObject<MobilityModel>()->SetPosition(Vector(500, 0,   0));
-    cornerNodes.Get(2)->GetObject<MobilityModel>()->SetPosition(Vector(0,   500, 0));
-    cornerNodes.Get(3)->GetObject<MobilityModel>()->SetPosition(Vector(500, 500, 0));
-
-    AnimationInterface anim("Mac_Simulation.xml");
-    anim.EnablePacketMetadata(false);         // disable — avoids "Max Packets exceeded" crash
-    anim.SetMaxPktsPerTraceFile(10000000);    // safety limit if re-enabled
-    anim.UpdateNodeDescription(gnb, "gNB");
-    anim.UpdateNodeColor(gnb, 255, 0, 0);
-    for (uint32_t i = 0; i < ueVoiceContainer.GetN(); ++i)
-    {
-        anim.UpdateNodeDescription(ueVoiceContainer.Get(i), "UE" + std::to_string(i+1));
-        anim.UpdateNodeColor(ueVoiceContainer.Get(i), 0, 0, 255);
-    }
-    for (uint32_t i = 0; i < cornerNodes.GetN(); ++i)
-        anim.UpdateNodeColor(cornerNodes.Get(i), 255, 255, 255);
 
     // ── Progress ──────────────────────────────────────────────────────────────
     Time effectiveSimTime = simTime - udpAppStartTime;
