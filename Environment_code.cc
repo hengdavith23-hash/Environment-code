@@ -1,18 +1,6 @@
 /*
  * ============================================================
- *  DQN-Based Scheduling for eMBB — NS-3 Environment
- * ============================================================
- * State  = [SINR_UE1..4 (norm), Queue_UE1..4 (norm)] → dim=8
- * Action = 4 scheduling algorithms (RR / PF / MaxRate / QoS)
- *          DQN selects algorithm each step → gNB MAC swapped
- * Reward = NorSysThroughput + Fairness − NormDelay
- *
- * Episode timing:
- *   EP_TIME_S    = 10s   ← change only this
- *   STEPS_PER_EP = 10
- *   STEP_TIME_S  = 1.0s  (auto)
- *   MAX_EPISODES = 100
- *   SIM_TIME_S   = 1000.4s (auto)
+ *  DQN-Based Resource Allocations for eMBB — NS-3 Environment
  * ============================================================
  */
 
@@ -47,12 +35,12 @@ NS_LOG_COMPONENT_DEFINE("EmbbDqnEnv");
 // ─────────────────────────────────────────────────────────────────────────────
 static const uint32_t NUM_UE        = 6;
 static const uint32_t STATE_DIM     = 12;  // [SINR×6, Queue×6]
-static const uint32_t ACTION_DIM    = 3;   // A0:PF  A1:QoS  A2:MaxRate
+static const uint32_t ACTION_DIM    = 3;  
 
-static double g_maxSysThroughput = NUM_UE * 10.24; // 6 × 10.24 = 61.44 Mbps max
-static double g_maxSinrDb        = 33.9;  // dB   — fixed, paper Table 4
-static double g_maxQueueBytes    = 1e-9;  // B    — dynamic, FlowMonitor updates
-static double g_maxDelayMs       = 10.0;  // ms   — 5G NR eMBB target delay
+static double g_maxSysThroughput = NUM_UE * 10.24;
+static double g_maxSinrDb        = 33.9; 
+static double g_maxQueueBytes    = 1e-9; 
+static double g_maxDelayMs       = 100.0;  
 
 static const uint32_t STEPS_PER_EP  = 10;
 static const uint32_t MAX_EPISODES  = 300;
@@ -60,17 +48,9 @@ static const uint32_t MAX_STEPS     = STEPS_PER_EP * MAX_EPISODES;
 
 static const double   EP_TIME_S     = 10.0;
 static const double   STEP_TIME_S   = EP_TIME_S / STEPS_PER_EP;  // 1.0s
-static const double   WARMUP_S      = 0.5; // standard ns-3 warmup
-// +STEP_TIME_S buffer ensures last StepCallback completes before Simulator::Stop
+static const double   WARMUP_S      = 0.5;
 static const double   SIM_TIME_S    = MAX_EPISODES * EP_TIME_S + WARMUP_S ;
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Action space — RB Metric Eq.(17) from paper:
-//  M_i,j(t) = [αi·DHoL_i(t)]^µ × [r_i,j(t)/R̄_i(t)]^φ
-//
-//  A0: PF       — µ=1, φ=1  (throughput + fairness)
-//  A1: QoS      — µ=2, φ=1  (delay-weighted, MLWDF-style)
-//  A2: MaxRate  — µ=1, φ=0  (best channel first)
 // ─────────────────────────────────────────────────────────────────────────────
 static const double ACTION_MU[3]  = {1.0, 2.0, 1.0};
 static const double ACTION_PHI[3] = {1.0, 1.0, 0.0};
@@ -163,16 +143,8 @@ double JainFairness(const std::vector<double>& x)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Apply DQN action — compute Eq.(17) RB metric, store µ/φ
+//  Apply DQN action — compute RB metric, store µ/φ
 //  M_i = normDelay^µ × normSinr^φ
-//
-//  Priority Config::Set removed — it caused RLC buffer starvation and
-//  delay cascades (2000ms+). PF scheduler runs naturally, keeping
-//  delay in the 1-10ms range for 5G NR eMBB.
-//
-//  A0 PF       µ=1,φ=1  balanced delay × SINR
-//  A1 QoS      µ=2,φ=1  delay-sensitive UEs weighted more
-//  A2 MaxRate  µ=1,φ=0  SINR only (best channel first)
 // ─────────────────────────────────────────────────────────────────────────────
 void ApplyAction(uint32_t action)
 {
@@ -458,8 +430,8 @@ void StepCallback()
             u.epAvgQueue = (u.epStepCount > 0) ? u.epAvgQueue / u.epStepCount : 0.0;
             // Reset accumulators for next episode
             u.epStepCount = 0;
-            u.epAvgSinr   = 0.0;   // reset so next episode starts clean
-            u.epAvgQueue  = 0.0;   // reset so next episode starts clean
+            u.epAvgSinr   = 0.0; 
+            u.epAvgQueue  = 0.0; 
             u.epRxPkts     = (uint64_t)drxp;
             // Reset snapshot
             u.epRxBytesStart  = kv.second.rxBytes;
@@ -491,8 +463,7 @@ void StepCallback()
     // Result: step 10 of the final episode is fully processed and episode
     // stats are written before the agent ever receives gameOver=true.
     g_openGym->NotifyCurrentState();
-
-    g_totalSteps++;   // increment AFTER notify — GetGameOver reads stale (correct) value
+    g_totalSteps++; 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -543,7 +514,7 @@ int main(int argc, char* argv[])
         LogComponentEnable("NrMacSchedulerOfdma", ll);
     }
 
-    Config::SetDefault("ns3::LteRlcUm::MaxTxBufferSize", UintegerValue(1024 * 1024)); // 1MB cap prevents queue buildup
+    Config::SetDefault("ns3::LteRlcUm::MaxTxBufferSize", UintegerValue(999999999)); 
     RngSeedManager::SetSeed(12345 + time(NULL) % 100000 + simSeed);
     RngSeedManager::SetRun(simSeed);
 
@@ -657,7 +628,7 @@ int main(int argc, char* argv[])
     CcBwpCreator ccBwpCreator;
     OperationBandInfo band;
     CcBwpCreator::SimpleOperationBandConf bandConf(
-        centralFrequency, bandwidth, 1, BandwidthPartInfo::UMa);//fr NLos,LoS
+        centralFrequency, bandwidth, 1, BandwidthPartInfo::UMa);//for NLos,LoS
     bandConf.m_numBwp = 1;
     band = ccBwpCreator.CreateOperationBandContiguousCc(bandConf);
     nrHelper->InitializeOperationBand(&band);
