@@ -1,1 +1,344 @@
 
+#!/usr/bin/env python3
+"""
+DQN-Based Resource Allocations for eMBB in 5G NR - Agent
+================================================
+State  : [SINR_UE1..6, Queue_UE1..6] 
+"""
+
+import os
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import random
+import collections
+import csv
+from datetime import datetime
+
+try:
+    from ns3gym import ns3env
+except ImportError:
+    raise ImportError("ns3gym not found. Install: pip install ns3gym")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hyperparameters  (Paper 1 Table 5)
+# ─────────────────────────────────────────────────────────────────────────────
+PORT          = 5555
+SEED          = 42
+STATE_DIM     = 12       # [SINR×6, Queue×6]
+ACTION_DIM    = 3        
+
+LEARNING_RATE = 1e-3     # α = 0.001
+GAMMA         = 0.998    # discount factor
+BATCH_SIZE    = 32
+BUFFER_SIZE   = 100000
+MIN_BUFFER    = 200
+TARGET_UPDATE = 10       # hard update every K steps
+
+EPS_START     = 1.0
+EPS_END       = 0.10
+EPS_DECAY     = 0.995
+N_EPISODES    = 300
+STEPS_PER_EP  = 10
+SAVE_EVERY    = 10
+RESULTS_DIR   = "results"
+torch.manual_seed(SEED)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Q-Network  (2 hidden layers, ReLU)
+# ─────────────────────────────────────────────────────────────────────────────
+class QNetwork(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(STATE_DIM, 128), nn.ReLU(),
+            nn.Linear(128,       128), nn.ReLU(),
+            nn.Linear(128, ACTION_DIM)
+        )
+        for layer in self.net:
+            if isinstance(layer, nn.Linear):
+                nn.init.uniform_(layer.weight, -0.01, 0.01)
+                nn.init.zeros_(layer.bias)
+
+    def forward(self, x):
+        return self.net(x)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Replay Buffer
+# ─────────────────────────────────────────────────────────────────────────────
+Transition = collections.namedtuple(
+    "Transition", ["state", "action", "reward", "next_state", "done"])
+
+class ReplayBuffer:
+    def __init__(self, capacity):
+        self.buf = collections.deque(maxlen=capacity)
+
+    def push(self, state, action, reward, next_state, done):
+        self.buf.append(Transition(
+            np.array(state,      dtype=np.float32),
+            int(action),
+            float(reward),
+            np.array(next_state, dtype=np.float32),
+            float(done)
+        ))
+
+    def sample(self, n):
+        return Transition(*zip(*random.sample(self.buf, n)))
+
+    def __len__(self):
+        return len(self.buf)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DQN Agent
+# ─────────────────────────────────────────────────────────────────────────────
+class DQNAgent:
+    def __init__(self):
+        self.policy = QNetwork().to(device)
+        self.target = QNetwork().to(device)
+        self.target.load_state_dict(self.policy.state_dict())
+        self.target.eval()
+
+        self.opt     = optim.Adam(self.policy.parameters(), lr=LEARNING_RATE)
+        self.buffer  = ReplayBuffer(BUFFER_SIZE)
+        self.epsilon = EPS_START
+        self.steps   = 0
+
+    def select_action(self, state):
+        if random.random() < self.epsilon:
+            return random.randint(0, ACTION_DIM - 1)
+        s = torch.FloatTensor(state).unsqueeze(0).to(device)
+        with torch.no_grad():
+            return int(self.policy(s).argmax(dim=1).item())
+
+    def store(self, state, action, reward, next_state, done):
+        self.buffer.push(state, action, reward, next_state, float(done))
+
+    def train_step(self):
+        if len(self.buffer) < MIN_BUFFER:
+            return None
+        # FIX: sample only as many as available when buffer < BATCH_SIZE
+        n = min(BATCH_SIZE, len(self.buffer))
+        b = self.buffer.sample(n)
+
+        s  = torch.FloatTensor(np.stack(b.state)).to(device)
+        a  = torch.LongTensor(b.action).unsqueeze(1).to(device)
+        r  = torch.FloatTensor(b.reward).unsqueeze(1).to(device)
+        s2 = torch.FloatTensor(np.stack(b.next_state)).to(device)
+        d  = torch.FloatTensor(b.done).unsqueeze(1).to(device)
+
+        q_curr = self.policy(s).gather(1, a)
+
+        with torch.no_grad():
+            q_next   = self.target(s2).max(dim=1, keepdim=True)[0]
+            q_target = r + GAMMA * q_next * (1.0 - d)
+
+        loss = nn.MSELoss()(q_curr, q_target)
+        self.opt.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(self.policy.parameters(), 10.0)
+        self.opt.step()
+
+        self.steps += 1
+        if self.steps % TARGET_UPDATE == 0:
+            self.target.load_state_dict(self.policy.state_dict())
+
+        return loss.item()
+
+    def decay_epsilon(self):
+        self.epsilon = max(EPS_END, self.epsilon * EPS_DECAY)
+
+    def save(self, path):
+        torch.save(self.policy.state_dict(), path)
+        print(f"  [saved] {path}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CSV helpers
+# ─────────────────────────────────────────────────────────────────────────────
+EP_CSV_PATH   = os.path.join(RESULTS_DIR, "episode_rewards.csv")
+STEP_CSV_PATH = os.path.join(RESULTS_DIR, "step_log.csv")
+
+def init_csvs():
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    with open(EP_CSV_PATH, 'w', newline='') as f:
+        csv.writer(f).writerow([
+            "Episode", "Total_Reward", "Avg_Reward_Per_Step",
+            "Avg_Loss", "Min_Loss", "Max_Loss",
+            "Buffer_Size", "Action_0", "Action_1", "Action_2",
+            "Dominant_Action", "Timestamp"
+        ])
+    with open(STEP_CSV_PATH, 'w', newline='') as f:
+        header = ["Episode", "Step", "Global_Step"]
+        for i in range(1, STATE_DIM//2 + 1): header.append(f"SINR_UE{i}")
+        for i in range(1, STATE_DIM//2 + 1): header.append(f"Queue_UE{i}")
+        header += ["Action", "Reward", "Cumulative_Reward", "Loss"]
+        csv.writer(f).writerow(header)
+
+def write_step_csv(ep, step, gstep, obs, action, reward, cum_r, loss):
+    with open(STEP_CSV_PATH, 'a', newline='') as f:
+        csv.writer(f).writerow([
+            ep, step, gstep,
+            *[round(float(v), 6) for v in obs[:STATE_DIM//2]],  
+            *[round(float(v), 6) for v in obs[STATE_DIM//2:]],   
+            action,
+            round(reward, 6), round(cum_r, 6),
+            round(loss, 6) if loss is not None else ""
+        ])
+
+def write_episode_csv(ep, ep_reward, ep_losses, buf_size, act_counts):
+    avg = float(np.mean(ep_losses)) if ep_losses else 0.0
+    mn  = float(np.min(ep_losses))  if ep_losses else 0.0
+    mx  = float(np.max(ep_losses))  if ep_losses else 0.0
+    dom = int(np.argmax(act_counts))
+    with open(EP_CSV_PATH, 'a', newline='') as f:
+        csv.writer(f).writerow([
+            ep,
+            round(ep_reward, 6),
+            round(ep_reward / STEPS_PER_EP, 6),
+            round(avg, 6), round(mn, 6), round(mx, 6),
+            buf_size,
+            act_counts[0], act_counts[1], act_counts[2],
+            dom,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Training loop
+# ─────────────────────────────────────────────────────────────────────────────
+def train():
+    print("=" * 60)
+    print("  DQN eMBB RB Allocation — 5G NR ns-3 Simulation")
+    print(f"  State={STATE_DIM}  Actions={ACTION_DIM}  Episodes={N_EPISODES}")
+    print(f"  Training starts after {MIN_BUFFER} samples in buffer")
+    print("=" * 60)
+
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    init_csvs()
+
+    env = ns3env.Ns3Env(port=PORT, stepTime= 1,
+                        startSim=False, simSeed=SEED, debug=False)
+    print("  Connected to ns-3!\n")
+
+    agent      = DQNAgent()
+    ep_rewards = []
+    ep_losses  = []
+
+    # FIX: get first real observation via reset() so action selection is
+    # always based on actual env state, never on a zeros placeholder.
+    try:
+        raw = env.reset()
+        obs = np.array(raw, dtype=np.float32).flatten() if raw is not None \
+              else np.zeros(STATE_DIM, dtype=np.float32)
+    except Exception:
+        obs = np.zeros(STATE_DIM, dtype=np.float32)
+
+    episode    = 1
+    ep_step    = 0
+    ep_reward  = 0.0
+    ep_loss    = []
+    ep_actions = [0, 0, 0]
+
+    print(f"Episode {episode}/{N_EPISODES}")
+
+    total_steps = N_EPISODES * STEPS_PER_EP
+
+    for global_step in range(1, total_steps + 1):
+        ep_step += 1
+
+        # ── 1. Select action from CURRENT observation ─────────────────────────
+        action = agent.select_action(obs)
+
+        # ── 2. Send action → receive next obs + reward ────────────────────────
+        try:
+            step_out = env.step(action)
+        except Exception as e:
+            print(f"\n  Simulation ended: {e}")
+            break
+
+        if len(step_out) == 5:
+            obs_next, reward, term, trunc, info = step_out
+            done = bool(term or trunc)
+        else:
+            obs_next, reward, done, info = step_out
+            done = bool(done)
+
+        next_obs = np.array(obs_next, dtype=np.float32).flatten()
+
+        # ── 3. Store transition ───────────────────────────────────────────────
+        agent.store(obs, action, reward, next_obs, done)
+
+        # ── 4. Train ──────────────────────────────────────────────────────────
+        loss = agent.train_step()
+        if loss is not None:
+            ep_loss.append(loss)
+
+        # ── 5. Decay epsilon EVERY STEP ───────────────────────────────────────
+        agent.decay_epsilon()
+
+        ep_reward         += reward
+        ep_actions[action] += 1
+
+        loss_str = f"{loss:.4f}" if loss is not None else "  --  "
+        print(f"  Step {ep_step:2d} | A={action}"
+              f" | R={reward:+.3f} | ΣR={ep_reward:.2f}"
+              f" | Loss={loss_str}")
+
+        # ── 6. Log step ───────────────────────────────────────────────────────
+        write_step_csv(episode, ep_step, global_step,
+                       obs, action, reward, ep_reward, loss)
+
+        # ── 7. Advance obs ────────────────────────────────────────────────────
+        obs = next_obs
+
+        # ── 8. Episode boundary ───────────────────────────────────────────────
+        if ep_step >= STEPS_PER_EP:
+            avg_loss = float(np.mean(ep_loss)) if ep_loss else 0.0
+            ep_rewards.append(ep_reward)
+            ep_losses.extend(ep_loss)
+            dom = int(np.argmax(ep_actions))
+
+            print(f"\nEpisode {episode:3d}/{N_EPISODES} DONE"
+                  f" | TotalReward={ep_reward:.4f}"
+                  f" | AvgLoss={avg_loss:.6f}"
+                  f" | Actions[A-0={ep_actions[0]} A-1={ep_actions[1]} A-2={ep_actions[2]}]"
+                  f" | Dominant={dom}"
+                  f" | Buf={len(agent.buffer)}\n")
+
+            write_episode_csv(episode, ep_reward, ep_loss,
+                              len(agent.buffer), ep_actions)
+
+            if episode % SAVE_EVERY == 0:
+                agent.save(os.path.join(RESULTS_DIR, f"dqn_embb_ep{episode}.pth"))
+
+            if episode >= N_EPISODES or done:
+                break
+
+            episode    += 1
+            ep_step     = 0
+            ep_reward   = 0.0
+            ep_loss     = []
+            ep_actions  = [0, 0, 0]
+            print(f"Episode {episode}/{N_EPISODES}")
+
+    # ── Final save ────────────────────────────────────────────────────────────
+    print("\nTraining complete.")
+    agent.save(os.path.join(RESULTS_DIR, "dqn_embb.pth"))
+
+    try:
+        env.close()
+    except Exception:
+        pass
+
+    print("Training finished!")
+    print(f"  Episode summary → {EP_CSV_PATH}")
+    print(f"  Step log        → {STEP_CSV_PATH}")
+
+
+if __name__ == "__main__":
+    train()
