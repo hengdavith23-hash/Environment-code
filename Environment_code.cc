@@ -294,6 +294,10 @@ Ptr<OpenGymDataContainer> GetObservation()
 }
 
 // Reward = NorSysThroughput + Fairness − NormDelay
+// ∑R_i(t) = Normalized System Throughput, 0≤∑R_i(t)≤1
+// ∑q_i(t) = Normalized System Throughput, 0≤∑q_i(t)≤1
+//F = Jain's Fairness Index, 0≤F≤1.// λ = Delay penalty coefficient (typically λ=1)
+// Rt​=∑​R_i​(t)+F−λ∑q_i​(t)
 float GetReward()
 {
     double sysTh = 0.0, avgDelay = 0.0;
