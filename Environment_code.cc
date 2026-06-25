@@ -191,7 +191,6 @@ void WriteEpisodeStats(uint32_t epNum)
         f << " Throughput:       " << u.epThroughput << " Mbps\n";
         f << " Mean delay:       " << u.epDelay      << " ms\n";
         f << " Packet Loss Rate: " << plr             << " %\n";
-        f << " Mean SINR:        " << u.epAvgSinr     << " dB\n";
         f << " Mean Queue:       " << u.epAvgQueue    << " bytes\n\n";
 
         avgTput  += u.epThroughput;
@@ -249,7 +248,6 @@ void WriteEpisodeStats(uint32_t epNum)
                      ? (double)(u.epTxPkts - u.epRxPkts) * 100.0 / u.epTxPkts : 0.0;
         plr = std::max(0.0, std::min(plr, 100.0));
         std::cout << "  UE" << (i+1)
-                  << " | SINR="  << std::setprecision(3) << u.sinrDb        << " dB"
                   << " | Tput="  << std::setprecision(3) << u.epThroughput  << " Mbps"
                   << " | Delay=" << std::setprecision(3) << u.epDelay       << " ms"
                   << " | PLR="   << std::setprecision(3) << plr             << " %\n";
