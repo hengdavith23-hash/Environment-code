@@ -162,7 +162,7 @@ void ApplyAction(uint32_t action)
             std::min((g_ueStats[i].sinrDb + 10.0) / (g_maxSinrDb + 10.0), 1.0));
         double M = std::pow(normDelay, g_mu) * std::pow(normSinr, g_phi);
         NS_LOG_INFO("Action=" << action << " " << names[action]
-            << " UE" << (i+1) << " delay=" << g_ueStats[i].delayMs
+            << " UE" << (i+1) << " delay=" << g_ueStats[i].delayMs //Queue apply base on delay
             << "ms sinr=" << g_ueStats[i].sinrDb << "dB M=" << M);
     }
 }
