@@ -154,7 +154,6 @@ void ApplyAction(uint32_t action)
 
     static const char* names[] = {"(µ=1,φ=1)", "(µ=2,φ=1)", "(µ=1,φ=0)"};
 
-    // Compute Eq.(17) metric per UE — logged each step
     for (uint32_t i = 0; i < NUM_UE; ++i)
     {
         double normDelay = std::max(0.01,
