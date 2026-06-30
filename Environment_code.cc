@@ -34,7 +34,7 @@ NS_LOG_COMPONENT_DEFINE("EmbbDqnEnv");
 //  Constants
 // ─────────────────────────────────────────────────────────────────────────────
 static const uint32_t NUM_UE        = 6;
-static const uint32_t STATE_DIM     = 12;  // [SINR×6, Queue×6]
+static const uint32_t STATE_DIM     = 12;  
 static const uint32_t ACTION_DIM    = 3;  
 
 static double g_maxSysThroughput = NUM_UE * 10.24;
@@ -98,7 +98,7 @@ static std::vector<UeStats> g_ueStats(NUM_UE);
 static Ptr<FlowMonitor>        g_monitor;
 static Ptr<Ipv4FlowClassifier> g_classifier;
 static Ptr<OpenGymInterface>   g_openGym;
-static uint32_t                g_currentAction = 0; // default PF
+static uint32_t                g_currentAction = 0; 
 
 static uint32_t g_stepCounter  = 0;
 static uint32_t g_totalSteps   = 0;
